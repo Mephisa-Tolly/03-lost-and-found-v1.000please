@@ -1,5 +1,10 @@
-import streamlit as st
+import os
+import json
+import uuid
+from pathlib import Path
 from datetime import date, datetime
+
+import streamlit as st
 from core.db import (
     init_db, add_item, list_items, get_item, update_item_status,
     add_claim, list_claims, get_claim, update_claim_status,
@@ -14,8 +19,51 @@ st.set_page_config(page_title="校园失物招领", layout="wide")
 init_db()
 seed()
 
+# ---------- 图片存储目录 ----------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "data", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 CATEGORIES = ["校园卡/学生证", "雨伞", "水杯", "耳机", "充电宝", "钥匙", "银行卡", "书本/文具", "其他"]
 SENSITIVE_CATEGORIES = ["校园卡/学生证", "银行卡", "钥匙"]
+
+
+# ---------- 工具：保存上传图片 ----------
+def save_images(uploaded_files):
+    if not uploaded_files:
+        return ""
+    paths = []
+    for f in uploaded_files:
+        ext = Path(f.name).suffix.lower()
+        if ext not in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
+            continue
+        fname = f"{uuid.uuid4().hex}{ext}"
+        fpath = os.path.join(UPLOAD_DIR, fname)
+        with open(fpath, "wb") as out:
+            out.write(f.getbuffer())
+        paths.append(fname)
+    return json.dumps(paths, ensure_ascii=False)
+
+
+# ---------- 工具：展示图片 ----------
+def show_images(images_json, sensitive=False):
+    if not images_json:
+        return
+    try:
+        names = json.loads(images_json)
+    except Exception:
+        return
+    if not names:
+        return
+    if sensitive:
+        st.caption("🔒 敏感物品图片已隐藏，仅管理员审核后可见")
+        return
+    cols = st.columns(min(len(names), 3))
+    for i, name in enumerate(names):
+        full = os.path.join(UPLOAD_DIR, name)
+        if os.path.exists(full):
+            with cols[i % 3]:
+                st.image(full, use_container_width=True)
 
 
 # ---------- 弹窗：匹配候选 Top-3 ----------
@@ -36,6 +84,7 @@ def match_dialog(title, results):
                 st.write("描述：**敏感物品，关键细节不公开**")
             else:
                 st.write(f"描述：{item['description']}")
+                show_images(item.get("images", ""), sensitive=False)
             st.write("相似理由：" + ("；".join(r["reasons"]) if r["reasons"] else "无"))
 
 
@@ -54,7 +103,6 @@ def page_home():
 def page_publish():
     st.header("发布信息")
 
-    # 发布后自动弹窗显示匹配
     if st.session_state.get("show_match"):
         results = st.session_state.get("match_results", [])
         title = st.session_state.get("match_title", "")
@@ -71,8 +119,12 @@ def page_publish():
         color = st.text_input("颜色（选填）")
         brand = st.text_input("品牌（选填）")
         description = st.text_area("详细描述（至少填一项）", placeholder="请描述物品特征")
-        st.file_uploader("拍照/上传图片（选填）", accept_multiple_files=True)
-        st.caption("提示：上传前请遮挡人脸、证件号与屏幕内容。")
+        uploaded = st.file_uploader(
+            "拍照/上传图片（选填，支持 jpg/png）",
+            type=["jpg", "jpeg", "png", "gif", "webp"],
+            accept_multiple_files=True,
+        )
+        st.caption("提示：上传前请遮挡人脸、证件号与屏幕内容；敏感物品图片默认不公开展示。")
         anonymous = st.toggle("匿名发布")
         contact = st.text_input("联系方式（默认隐藏，核验通过后可见）")
         private_features = st.text_input("私密特征（选填，仅用于认领核验）")
@@ -83,20 +135,18 @@ def page_publish():
             st.error("标题、地点、描述为必填项")
             return
         sensitive = 1 if category in SENSITIVE_CATEGORIES else 0
+        images_json = save_images(uploaded)
         data = {
             "type": item_type, "title": title, "category": category, "location": location,
             "time": f"{d} {t.strftime('%H:%M')}", "color": color, "brand": brand,
-            "description": description, "images": "", "contact": contact,
+            "description": description, "images": images_json, "contact": contact,
             "anonymous": 1 if anonymous else 0, "sensitive_level": sensitive,
             "private_features": private_features, "created_by": "me",
         }
         add_item(data)
         st.success(f"已发布【{item_type}】：{title}")
 
-        # 自动匹配并弹窗
         results = match(data, list_items())
-
-        # 双向通知
         for r in results:
             target_user = r["item"]["created_by"]
             if target_user and target_user != "me":
@@ -131,10 +181,8 @@ def page_pool():
         return
 
     for r in rows:
-        # 用 expander：点击标题直接原地展开详情
         label = f"**{r['title']}**　·　{r['type']}　·　状态：{r['status']}"
         with st.expander(label, expanded=False):
-            # 展开后的大字号标题
             st.markdown(f"## {r['title']}")
 
             st.write(f"**类别：**{r['category']}")
@@ -150,17 +198,18 @@ def page_pool():
             else:
                 st.write(f"**描述：**{r['description']}")
 
+            # 图片展示
+            show_images(r.get("images", ""), sensitive=(r["sensitive_level"] == 1))
+
             if r["anonymous"] == 1:
                 st.caption("🔒 匿名发布，不展示发布者身份")
 
             st.divider()
 
-            # 🔴 恢复“查看匹配候选”按钮
             if st.button("🔍 查看匹配候选", key=f"m_{r['item_id']}"):
                 results = match(r, list_items())
                 match_dialog(r["title"], results)
 
-            # 认领申请
             st.write("**申请认领**")
             applicant = st.text_input("你的姓名/昵称", key=f"ap_{r['item_id']}")
             answers = st.text_input("私密特征核验（必填，用于防冒领）", key=f"an_{r['item_id']}")
@@ -188,6 +237,11 @@ def page_mine():
         with st.container(border=True):
             st.subheader(f"{r['title']}　·　{r['type']}")
             st.write(f"状态：{r['status']}")
+
+            if r["sensitive_level"] == 1:
+                st.caption("🔒 敏感物品，图片默认不公开")
+            else:
+                show_images(r.get("images", ""), sensitive=False)
 
             if r["status"] == "认领中":
                 st.info("认领进度：已有申请人，待您确认 → 管理员二次核验 → 发放联系方式")
@@ -245,18 +299,40 @@ def page_admin():
             a_loc = st.text_input("地点", value="上次登记地点：快递站")
             a_title = st.text_input("标题", placeholder="例如：捡到校园卡")
             a_desc = st.text_area("描述")
-            shelf = st.text_input("货架位置编码（选填）")
+            a_uploaded = st.file_uploader(
+                "拍照/上传图片（管理员登记可拍照上传）",
+                type=["jpg", "jpeg", "png", "gif", "webp"],
+                accept_multiple_files=True,
+                key="admin_upload",
+            )
+            shelf = st.text_input("货架位置编码（选填，如 A-架-2）")
             if st.form_submit_button("保存台账并触发匹配"):
+                images_json = save_images(a_uploaded)
+                sensitive = 1 if a_cat in SENSITIVE_CATEGORIES else 0
                 data = {
                     "type": "招领", "title": a_title, "category": a_cat, "location": a_loc,
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "description": a_desc, "created_by": "admin",
+                    "description": a_desc, "images": images_json,
+                    "sensitive_level": sensitive, "created_by": "admin",
                 }
                 add_item(data)
                 st.success("已登记入台账！系统已自动触发匹配。")
 
     with tab2:
-        st.dataframe(list_items(item_type="招领"), use_container_width=True)
+        st.subheader("台账列表")
+        rows = list_items(item_type="招领")
+        for r in rows:
+            with st.container(border=True):
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    st.subheader(f"{r['title']}")
+                    st.write(f"类别：{r['category']}　地点：{r['location']}　时间：{r['time']}")
+                    st.write(f"描述：{r['description']}")
+                with c2:
+                    st.write(f"状态：{r['status']}")
+                    st.write(f"经办：{r['created_by']}")
+                # 管理员可看所有图片，包括敏感物品原图
+                show_images(r.get("images", ""), sensitive=False)
 
 
 # ---------- 页面：评测 ----------
