@@ -1,0 +1,6 @@
+streamlit
+jieba
+scikit-learn
+pandas
+numpy
+qrcode
