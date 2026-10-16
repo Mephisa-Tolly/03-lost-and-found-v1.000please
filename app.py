@@ -135,7 +135,19 @@ def page_publish():
         add_item(data)
         st.success(f"已发布【{item_type}】：{title}")
 
+        # 自动匹配
         results = match(data, list_items())
+        
+        # 🔴 双向匹配通知：给被匹配到的那条信息的发布者发通知
+        for r in results:
+            target_user = r["item"]["created_by"]
+            if target_user and target_user != "me":  # 不给自己发
+                add_notification(
+                    target_user, 
+                    "匹配命中", 
+                    f"有新的【{item_type}】信息可能与您的《{r['item']['title']}》匹配，请查看。"
+                )
+
         st.session_state["match_results"] = results
         st.session_state["match_title"] = title
         st.session_state["show_match"] = True
@@ -174,6 +186,12 @@ def page_pool():
                 st.write(f"状态：{r['status']}")
                 if r["anonymous"] == 1:
                     st.write("匿名发布")
+                
+                # 🔴 新增：查看匹配候选按钮
+                if st.button("查看匹配候选", key=f"m_{r['item_id']}"):
+                    results = match(r, list_items())
+                    match_dialog(r["title"], results)
+                
                 if st.button("查看详情", key=f"d_{r['item_id']}"):
                     detail_dialog(r)
 
@@ -189,6 +207,22 @@ def page_mine():
             st.write(f"**{r['title']}**  ·  {r['type']}  ·  状态：{r['status']}")
             if st.button("查看详情", key=f"md_{r['item_id']}"):
                 detail_dialog(r)
+            
+            # 🔴 新增：认领批准逻辑
+            if r["status"] == "认领中":
+                claims = list_claims(item_id=r["item_id"])
+                if claims:
+                    st.write("---")
+                    st.write("**待处理的认领申请：**")
+                    for c in claims:
+                        st.write(f"申请人：{c['applicant']}，核验答案：{c['answers']}")
+                        if c["status"] == "待核验":
+                            if st.button("✅ 批准认领", key=f"approve_{c['claim_id']}"):
+                                update_claim_status(c["claim_id"], "已通过")
+                                update_item_status(r["item_id"], "已确认")
+                                add_notification(c["applicant"], "认领通过", f"您对《{r['title']}》的认领申请已通过，联系方式可见。")
+                                st.success("已批准！")
+                                st.rerun()
 
     st.divider()
     st.subheader("我的申请")
