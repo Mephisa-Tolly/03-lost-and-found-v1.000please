@@ -19,7 +19,6 @@ st.set_page_config(page_title="校园失物招领", layout="wide")
 init_db()
 seed()
 
-# ---------- 图片存储目录 ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "data", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -28,7 +27,6 @@ CATEGORIES = ["校园卡/学生证", "雨伞", "水杯", "耳机", "充电宝", 
 SENSITIVE_CATEGORIES = ["校园卡/学生证", "银行卡", "钥匙"]
 
 
-# ---------- 工具：保存上传图片 ----------
 def save_images(uploaded_files):
     if not uploaded_files:
         return ""
@@ -45,7 +43,6 @@ def save_images(uploaded_files):
     return json.dumps(paths, ensure_ascii=False)
 
 
-# ---------- 工具：展示图片 ----------
 def show_images(images_json, sensitive=False):
     if not images_json:
         return
@@ -66,7 +63,63 @@ def show_images(images_json, sensitive=False):
                 st.image(full, use_container_width=True)
 
 
-# ---------- 弹窗：匹配候选 Top-3 ----------
+# ---------- 弹窗：物品详情（包含匹配结果和认领） ----------
+@st.dialog("物品详情", width="large")
+def detail_dialog(item):
+    # 🟢 彻底去掉星号，改用纯文本+换行
+    st.markdown(f"# {item['title']}　·　{item['type']}")
+    st.write("类别：", item['category'])
+    st.write("地点：", item['location'])
+    st.write("时间：", item['time'])
+    
+    if item.get("color"):
+        st.write("颜色：", item['color'])
+    if item.get("brand"):
+        st.write("品牌：", item['brand'])
+
+    if item["sensitive_level"] == 1:
+        st.write("描述：该类别为敏感物品，关键细节不公开")
+    else:
+        st.write("描述：", item['description'])
+        show_images(item.get("images", ""), sensitive=False)
+
+    if item["anonymous"] == 1:
+        st.caption("🔒 匿名发布，不展示发布者身份")
+
+    st.divider()
+
+    # 🟢 不再弹窗嵌套，直接展开匹配结果
+    if st.button("🔍 查看匹配候选", key=f"detail_m_{item['item_id']}"):
+        results = match(item, list_items())
+        if not results:
+            st.warning("暂无匹配候选。")
+        else:
+            st.subheader("匹配候选 Top-3")
+            for i, r in enumerate(results):
+                m_item = r["item"]
+                with st.container(border=True):
+                    st.write(f"候选 {i+1}　相似度 {r['score']}（{r['level']}）")
+                    st.write(f"{m_item['title']} | {m_item['type']}")
+                    st.write(f"相似理由：{'；'.join(r['reasons']) if r['reasons'] else '无'}")
+
+    # 申请认领表单
+    st.subheader("申请认领")
+    applicant = st.text_input("你的姓名/昵称", key=f"ap_{item['item_id']}")
+    answers = st.text_input("私密特征核验（必填，用于防冒领）", key=f"an_{item['item_id']}")
+    
+    if st.button("提交认领申请", key=f"sb_{item['item_id']}"):
+        if not answers:
+            st.error("必须填写私密特征核验")
+        else:
+            add_claim(item["item_id"], applicant or "匿名申请人", answers)
+            update_item_status(item["item_id"], "认领中")
+            add_notification(item["created_by"] or "me", "认领申请",
+                             f"有人申请认领《{item['title']}》，请查看核验。")
+            st.success("认领申请已提交，状态更新为【认领中】")
+            st.rerun()
+
+
+# ---------- 弹窗：发布后的匹配提示 ----------
 @st.dialog("匹配候选 Top-3", width="large")
 def match_dialog(title, results):
     st.subheader(f"【{title}】的匹配候选")
@@ -77,14 +130,9 @@ def match_dialog(title, results):
     for i, r in enumerate(results):
         item = r["item"]
         with st.container(border=True):
-            st.markdown(f"### 候选 {i+1}　相似度 {r['score']}（{r['level']}）")
-            st.write(f"**{item['title']}**  ·  {item['type']}")
+            st.write(f"候选 {i+1}　相似度 {r['score']}（{r['level']}）")
+            st.write(f"{item['title']}  ·  {item['type']}")
             st.write(f"类别：{item['category']}　地点：{item['location']}　时间：{item['time']}")
-            if item["sensitive_level"] == 1:
-                st.write("描述：**敏感物品，关键细节不公开**")
-            else:
-                st.write(f"描述：{item['description']}")
-                show_images(item.get("images", ""), sensitive=False)
             st.write("相似理由：" + ("；".join(r["reasons"]) if r["reasons"] else "无"))
 
 
@@ -180,51 +228,19 @@ def page_pool():
         st.warning("没有找到相关结果，请尝试更改关键词或发布新的寻物/招领信息。")
         return
 
+    if "view_item" in st.session_state and st.session_state["view_item"]:
+        detail_dialog(st.session_state["view_item"])
+
     for r in rows:
-        label = f"**{r['title']}**　·　{r['type']}　·　状态：{r['status']}"
-        with st.expander(label, expanded=False):
-            st.markdown(f"## {r['title']}")
-
-            # 这里全部改成了 st.markdown，星号会消失，变成加粗字体
-            st.markdown(f"**类别：**{r['category']}")
-            st.markdown(f"**地点：**{r['location']}")
-            st.markdown(f"**时间：**{r['time']}")
+        with st.container(border=True):
+            st.subheader(f"{r['title']}　·　{r['type']}")
+            st.write(f"类别：{r['category']}　|　地点：{r['location']}　|　时间：{r['time']}")
+            st.write(f"状态：{r['status']}")
             
-            if r["color"]:
-                st.markdown(f"**颜色：**{r['color']}")
-            if r["brand"]:
-                st.markdown(f"**品牌：**{r['brand']}")
+            if st.button("🔍 查看详情并认领", key=f"view_{r['item_id']}", use_container_width=True):
+                st.session_state["view_item"] = r
+                st.rerun()
 
-            if r["sensitive_level"] == 1:
-                st.markdown("**描述：**该类别为敏感物品，关键细节不公开")
-            else:
-                st.markdown(f"**描述：**{r['description']}")
-
-            # 图片展示
-            show_images(r.get("images", ""), sensitive=(r["sensitive_level"] == 1))
-
-            if r["anonymous"] == 1:
-                st.caption("🔒 匿名发布，不展示发布者身份")
-
-            st.divider()
-
-            if st.button("🔍 查看匹配候选", key=f"m_{r['item_id']}"):
-                results = match(r, list_items())
-                match_dialog(r["title"], results)
-
-            st.write("**申请认领**")
-            applicant = st.text_input("你的姓名/昵称", key=f"ap_{r['item_id']}")
-            answers = st.text_input("私密特征核验（必填，用于防冒领）", key=f"an_{r['item_id']}")
-            if st.button("提交认领申请", key=f"sb_{r['item_id']}"):
-                if not answers:
-                    st.error("必须填写私密特征核验")
-                else:
-                    add_claim(r["item_id"], applicant or "匿名申请人", answers)
-                    update_item_status(r["item_id"], "认领中")
-                    add_notification(r["created_by"] or "me", "认领申请",
-                                     f"有人申请认领《{r['title']}》，请查看核验。")
-                    st.success("认领申请已提交，状态更新为【认领中】")
-                    st.rerun()
 
 # ---------- 页面：我的 ----------
 def page_mine():
@@ -268,7 +284,7 @@ def page_mine():
         item = get_item(c["item_id"])
         title = item["title"] if item else f"物品{c['item_id']}"
         with st.container(border=True):
-            st.write(f"申请物品：**{title}**")
+            st.write(f"申请物品：{title}")
             st.write(f"状态：{c['status']}")
 
 
@@ -280,7 +296,7 @@ def page_notifications():
         st.write("暂无消息。")
     for n in notes:
         with st.container(border=True):
-            st.write(f"**{n['type']}**：{n['content']}")
+            st.write(f"{n['type']}：{n['content']}")
             st.caption(f"时间：{n['created_at']}　{'已读' if n['read_flag'] else '未读'}")
             if not n["read_flag"]:
                 if st.button("标记已读", key=f"rn_{n['notification_id']}"):
@@ -326,13 +342,12 @@ def page_admin():
             with st.container(border=True):
                 c1, c2 = st.columns([3, 1])
                 with c1:
-                    st.subheader(f"{r['title']}")
+                    st.subheader(r['title'])
                     st.write(f"类别：{r['category']}　地点：{r['location']}　时间：{r['time']}")
                     st.write(f"描述：{r['description']}")
                 with c2:
                     st.write(f"状态：{r['status']}")
                     st.write(f"经办：{r['created_by']}")
-                # 管理员可看所有图片，包括敏感物品原图
                 show_images(r.get("images", ""), sensitive=False)
 
 
