@@ -185,18 +185,20 @@ def page_pool():
         with st.expander(label, expanded=False):
             st.markdown(f"## {r['title']}")
 
-            st.write(f"**类别：**{r['category']}")
-            st.write(f"**地点：**{r['location']}")
-            st.write(f"**时间：**{r['time']}")
+            # 这里全部改成了 st.markdown，星号会消失，变成加粗字体
+            st.markdown(f"**类别：**{r['category']}")
+            st.markdown(f"**地点：**{r['location']}")
+            st.markdown(f"**时间：**{r['time']}")
+            
             if r["color"]:
-                st.write(f"**颜色：**{r['color']}")
+                st.markdown(f"**颜色：**{r['color']}")
             if r["brand"]:
-                st.write(f"**品牌：**{r['brand']}")
+                st.markdown(f"**品牌：**{r['brand']}")
 
             if r["sensitive_level"] == 1:
-                st.write("**描述：**该类别为敏感物品，关键细节不公开")
+                st.markdown("**描述：**该类别为敏感物品，关键细节不公开")
             else:
-                st.write(f"**描述：**{r['description']}")
+                st.markdown(f"**描述：**{r['description']}")
 
             # 图片展示
             show_images(r.get("images", ""), sensitive=(r["sensitive_level"] == 1))
@@ -223,7 +225,6 @@ def page_pool():
                                      f"有人申请认领《{r['title']}》，请查看核验。")
                     st.success("认领申请已提交，状态更新为【认领中】")
                     st.rerun()
-
 
 # ---------- 页面：我的 ----------
 def page_mine():
