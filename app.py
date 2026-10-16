@@ -7,6 +7,7 @@ from core.db import (
 )
 from core.seed_data import seed
 from core.matcher import match
+from core.evaluator import run_eval
 
 st.set_page_config(page_title="校园失物招领", layout="wide")
 
@@ -16,7 +17,7 @@ seed()
 CATEGORIES = ["校园卡/学生证", "雨伞", "水杯", "耳机", "充电宝", "钥匙", "银行卡", "书本/文具", "其他"]
 SENSITIVE_CATEGORIES = ["校园卡/学生证", "银行卡", "钥匙"]
 
-# ---------- 组件：渲染候选卡片（对应图2）----------
+# ---------- 组件：渲染候选卡片 ----------
 def render_match_card(r, idx):
     item = r["item"]
     with st.container(border=True):
@@ -28,21 +29,10 @@ def render_match_card(r, idx):
         else:
             st.write(f"描述：{item['description']}")
         
-        # 相似理由标签
         tags = " ".join([f"`{reason}`" for reason in r["reasons"]])
         st.write(f"相似理由：{tags if tags else '暂无明确相似点'}")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("去认领", key=f"claim_{idx}_{item['item_id']}"):
-                st.session_state["claim_item"] = item
-                st.session_state["current_page"] = "我的" # 跳转到我的页面进行认领
-                st.rerun()
-        with col2:
-            if st.button("不候选", key=f"reject_{idx}_{item['item_id']}"):
-                st.toast("已记录您的反馈，系统将优化后续匹配。")
-                
-        st.caption("请仔细核对物品特征，确认无误后再认领。系统不会自动判定归属。")
+        st.caption("请仔细核对物品特征，确认无误后再去“信息池”申请认领。系统不会自动判定归属。")
 
 # ---------- 页面：匹配结果列表 ----------
 def page_match_results(results, title):
@@ -51,7 +41,7 @@ def page_match_results(results, title):
     if not results:
         st.warning("无匹配结果。暂无找到符合您描述的物品，请检查关键词或重新发布。")
         return
-    cols = st.columns(3) # 对应图2的三列
+    cols = st.columns(3)
     for idx, r in enumerate(results):
         with cols[idx]:
             render_match_card(r, idx + 1)
@@ -67,7 +57,7 @@ def page_home():
     with col2:
         st.metric("招领信息", len(list_items(item_type="招领")))
 
-# ---------- 页面：发布信息（对应图1）----------
+# ---------- 页面：发布信息 ----------
 def page_publish():
     st.header("发布信息")
     
@@ -98,7 +88,7 @@ def page_publish():
             
         description = st.text_area("详细描述（至少填一项，≤300字）", placeholder="请描述物品特征，越详细越容易匹配")
         
-        st.file_uploader("拍照/上传图片（选填，最多9张，单张≤1MB）", accept_multiple_files=True)
+        st.file_uploader("拍照/上传图片（选填，最多9张）", accept_multiple_files=True)
         st.caption("提示：上传前请遮挡人脸、证件号与屏幕内容；敏感物品仅管理员可见原图。")
         
         anonymous = st.toggle("匿名发布（开启后不展示姓名/学号/头像）")
@@ -113,20 +103,11 @@ def page_publish():
             return
         sensitive = 1 if category in SENSITIVE_CATEGORIES else 0
         data = {
-            "type": item_type,
-            "title": title,
-            "category": category,
-            "location": location,
-            "time": f"{d} {t.strftime('%H:%M')}",
-            "color": color,
-            "brand": brand,
-            "description": description,
-            "images": "",
-            "contact": contact,
-            "anonymous": 1 if anonymous else 0,
-            "sensitive_level": sensitive,
-            "private_features": private_features,
-            "created_by": "me",
+            "type": item_type, "title": title, "category": category, "location": location,
+            "time": f"{d} {t.strftime('%H:%M')}", "color": color, "brand": brand,
+            "description": description, "images": "", "contact": contact,
+            "anonymous": 1 if anonymous else 0, "sensitive_level": sensitive,
+            "private_features": private_features, "created_by": "me",
         }
         add_item(data)
         st.success(f"已发布【{item_type}】：{title}")
@@ -144,27 +125,21 @@ def page_publish():
         st.session_state["last_title"] = title
         st.rerun()
 
-# ---------- 页面：信息池（对应图5）----------
+# ---------- 页面：信息池（已改为折叠面板） ----------
 def page_pool():
     st.header("信息池")
     
-    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         f_keyword = st.text_input("搜索关键词（自动匹配同义词，如“保温杯/水杯”）", placeholder="输入物品名称...")
     with col2:
         f_type = st.selectbox("类别", ["全部", "寻物", "招领"])
     with col3:
-        f_location = st.selectbox("地点", ["全部"] + list(set([r["location"] for r in list_items()])))
-    with col4:
         f_sort = st.selectbox("排序", ["时间倒序", "相关度"])
 
     item_type = None if f_type == "全部" else f_type
     rows = list_items(item_type=item_type, keyword=f_keyword or None)
     
-    # 简单地点过滤
-    if f_location != "全部":
-        rows = [r for r in rows if r["location"] == f_location]
-
     st.write(f"共 {len(rows)} 条结果")
     
     if not rows:
@@ -172,42 +147,34 @@ def page_pool():
         return
         
     for r in rows:
-        with st.container(border=True):
-            c1, c2 = st.columns([3, 1])
-            with c1:
-                st.subheader(f"{r['title']}  ·  {r['type']}")
-                st.write(f"类别：{r['category']}　地点：{r['location']}　时间：{r['time']}")
-                if r["sensitive_level"] == 1:
-                    st.write("描述：**该类别为敏感物品，关键细节不公开**")
-                else:
-                    st.write(f"描述：{r['description']}")
-            with c2:
-                st.write(f"状态：{r['status']}")
-                if r["anonymous"] == 1:
-                    st.write("匿名发布")
-                if st.button("查看详情", key=f"detail_{r['item_id']}"):
-                    st.session_state["view_item"] = r
-                    st.rerun()
-
-    if "view_item" in st.session_state and st.session_state["view_item"]:
-        item = st.session_state["view_item"]
-        with st.expander(f"【{item['title']}】详细信息与认领", expanded=True):
-            st.write(f"类别：{item['category']} | 地点：{item['location']} | 时间：{item['time']}")
+        # 🔴 核心改动：用手风琴折叠框，点标题直接原地展开，无需单独按钮
+        with st.expander(f"📦 {r['title']}  ·  {r['type']}   |   状态：{r['status']}"):
+            st.write(f"类别：{r['category']}　地点：{r['location']}　时间：{r['time']}")
+            
+            # 敏感物品保护
+            if r["sensitive_level"] == 1:
+                st.write("描述：**该类别为敏感物品，关键细节不公开**")
+            else:
+                st.write(f"描述：{r['description']}")
+            
+            if r["anonymous"] == 1:
+                st.caption("🔒 匿名发布，不展示发布者身份")
+                
+            st.divider()
             st.write("**申请认领**")
-            applicant = st.text_input("你的姓名/昵称")
-            answers = st.text_input("私密特征核验（必填，用于防冒领）")
-            if st.button("提交认领申请", key=f"claim_submit_{item['item_id']}"):
+            applicant = st.text_input("你的姓名/昵称", key=f"ap_{r['item_id']}")
+            answers = st.text_input("私密特征核验（必填，用于防冒领）", key=f"an_{r['item_id']}")
+            if st.button("提交认领申请", key=f"sb_{r['item_id']}"):
                 if not answers:
                     st.error("必须填写私密特征核验")
                 else:
-                    add_claim(item["item_id"], applicant or "匿名", answers)
-                    update_item_status(item["item_id"], "认领中")
-                    add_notification(item["created_by"] or "me", "认领申请", f"有人申请认领《{item['title']}》，请查看核验。")
-                    st.success("认领申请已提交！")
-                    st.session_state["view_item"] = None
+                    add_claim(r["item_id"], applicant or "匿名申请人", answers)
+                    update_item_status(r["item_id"], "认领中")
+                    add_notification(r["created_by"] or "me", "认领申请", f"有人申请认领《{r['title']}》，请查看核验。")
+                    st.success("认领申请已提交！状态已更新为【认领中】")
                     st.rerun()
 
-# ---------- 页面：我的（认领进度对应图3）----------
+# ---------- 页面：我的 ----------
 def page_mine():
     st.header("我的记录")
     
@@ -233,10 +200,6 @@ def page_mine():
                                 add_notification(c["applicant"], "认领通过", f"您对《{r['title']}》的认领申请已通过，联系方式可见。")
                                 st.success("已批准！")
                                 st.rerun()
-            
-            if st.button("查看详情", key=f"md_{r['item_id']}"):
-                st.session_state["view_item"] = r
-                st.rerun()
 
     st.divider()
     st.subheader("📋 我的申请")
@@ -264,7 +227,7 @@ def page_notifications():
                     mark_notification_read(n["notification_id"])
                     st.rerun()
 
-# ---------- 页面：管理端台账（对应图4）----------
+# ---------- 页面：管理端台账 ----------
 def page_admin():
     st.header("管理员台账")
     st.caption("仅管理员可见（保卫处/宿管/系统管理员）")
@@ -274,15 +237,14 @@ def page_admin():
         st.subheader("快速登记（拍照即录）")
         with st.form("admin_publish"):
             a_cat = st.selectbox("类别", CATEGORIES)
-            a_loc = st.text_input("地点", value="上次登记地点：快递站") # 模拟记忆
+            a_loc = st.text_input("地点", value="上次登记地点：快递站")
             a_title = st.text_input("标题", placeholder="例如：捡到校园卡")
             a_desc = st.text_area("描述")
             shelf = st.text_input("货架位置编码（选填，如A-架-2）")
             
             if st.form_submit_button("保存台账并触发匹配"):
                 data = {
-                    "type": "招领",
-                    "title": a_title, "category": a_cat, "location": a_loc,
+                    "type": "招领", "title": a_title, "category": a_cat, "location": a_loc,
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "description": a_desc, "created_by": "admin"
                 }
@@ -294,12 +256,21 @@ def page_admin():
         st.dataframe(list_items(item_type="招领"), use_container_width=True)
         st.caption("字段：编号 | 类别 | 存放位置 | 状态 | 经办人")
 
+# ---------- 页面：评测 ----------
+def page_eval():
+    st.header("评测报告")
+    st.write("运行 40 组评测集，验证匹配效果。")
+    if st.button("运行评测"):
+        with st.spinner("评测中..."):
+            result = run_eval()
+        st.json(result)
+
 # ---------- 主入口 ----------
 st.title("校园智能失物招领匹配系统")
 st.write("V1.0 开发中")
 
 st.sidebar.title("导航")
-page = st.sidebar.radio("选择页面", ["首页", "发布", "信息池", "我的", "消息", "管理端"])
+page = st.sidebar.radio("选择页面", ["首页", "发布", "信息池", "我的", "消息", "管理端", "评测"])
 
 if page == "首页":
     page_home()
@@ -313,3 +284,5 @@ elif page == "消息":
     page_notifications()
 elif page == "管理端":
     page_admin()
+elif page == "评测":
+    page_eval()
